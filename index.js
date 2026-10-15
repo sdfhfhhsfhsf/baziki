@@ -136,32 +136,6 @@ function processGiftCode(userId, codeText) {
   };
 }
 
-// کیبورد ثابت (Reply Keyboard) برای پیوی
-function getPrivateReplyKeyboard(userId) {
-  const keyboard = [
-    [{ text: "🎁 وارد کردن کد هدیه" }]
-  ];
-  if (String(userId) === OWNER_ID) {
-    keyboard.push([{ text: "⚙️ پنل مدیریت" }, [{ text: "📋 لیست کدهای هدیه" }]]);
-  }
-  return {
-    keyboard: keyboard,
-    resize_keyboard: true,
-    persistent: true
-  };
-}
-
-// کیبورد بازگشت هنگام ساخت یا وارد کردن کد هدیه
-function getBackReplyKeyboard(userId) {
-  return {
-    keyboard: [
-      [{ text: "🔙 بازگشت به منوی اصلی" }]
-    ],
-    resize_keyboard: true,
-    persistent: true
-  };
-}
-
 async function handleUpdate(update) {
   try {
     if (update.callback_query) {
@@ -199,34 +173,36 @@ async function handleUpdate(update) {
         if (!game) {
           return await answerCallbackQuery(cb.id, "این بازی دیگر وجود ندارد!", true);
         }
-        if (String(game.creator_id) !== userId) {
-          const joiner = getUser(userId);
-          if (joiner.balance < game.amount) {
-            return await answerCallbackQuery(cb.id, `موجودی شما ناکافی است! شما به ${game.amount} سانت نیاز دارید.`, true);
-          }
-
-          joiner.balance -= game.amount;
-
-          const prize = game.amount * 2;
-          const winnerUser = getUser(game.creator_id);
-          winnerUser.balance += prize;
-
-          delete dbData.games[gameId];
-          saveDB();
-
-          const winnerName = game.creator_name;
-          const loserName = cb.from.first_name || "کاربر";
-
-          const successText = `🏆 **نتیجه بازی و اعلام برنده:**\n\n` +
-            `👑 برنده: [${winnerName}](tg://user?id=${game.creator_id})\n` +
-            `➕ دریافت جایزه: **+${prize} سانت** (موجودی جدید: **${winnerUser.balance} سانت**)\n\n` +
-            `💔 بازنده: [${loserName}](tg://user?id=${userId})\n` +
-            `➖ کسر مبلغ: **-${game.amount} سانت** (موجودی جدید: **${joiner.balance} سانت**)\n\n` +
-            `🔥 بازی به اتمام رسید!`;
-
-          await editMessageText(chatId, msgId, successText);
-          return await answerCallbackQuery(cb.id, `بازی تمام شد! برنده: ${winnerName}`, true);
+        if (String(game.creator_id) === userId) {
+          return await answerCallbackQuery(cb.id, "سازنده بازی نمی‌تواند روی بازی خودش ورود بزند!", true);
         }
+
+        const joiner = getUser(userId);
+        if (joiner.balance < game.amount) {
+          return await answerCallbackQuery(cb.id, `موجودی شما ناکافی است! شما به ${game.amount} سانت نیاز دارید.`, true);
+        }
+
+        joiner.balance -= game.amount;
+
+        const prize = game.amount * 2;
+        const winnerUser = getUser(game.creator_id);
+        winnerUser.balance += prize;
+
+        delete dbData.games[gameId];
+        saveDB();
+
+        const winnerName = game.creator_name;
+        const loserName = cb.from.first_name || "کاربر";
+
+        const successText = `🏆 **نتیجه بازی و اعلام برنده:**\n\n` +
+          `👑 برنده: [${winnerName}](tg://user?id=${game.creator_id})\n` +
+          `➕ دریافت جایزه: **+${prize} سانت** (موجودی جدید: **${winnerUser.balance} سانت**)\n\n` +
+          `💔 بازنده: [${loserName}](tg://user?id=${userId})\n` +
+          `➖ کسر مبلغ: **-${game.amount} سانت** (موجودی جدید: **${joiner.balance} سانت**)\n\n` +
+          `🔥 بازی به اتمام رسید!`;
+
+        await editMessageText(chatId, msgId, successText);
+        return await answerCallbackQuery(cb.id, `بازی تمام شد! برنده: ${winnerName}`, true);
       }
 
       if (data === "help_main") {
@@ -261,6 +237,79 @@ async function handleUpdate(update) {
         return await answerCallbackQuery(cb.id);
       }
 
+      if (isPrivate) {
+        if (data === "owner_panel" && userId === OWNER_ID) {
+          const panelKb = {
+            inline_keyboard: [
+              [{ text: "🎁 ساخت کد هدیه", callback_data: "create_gift_code" }],
+              [{ text: "📊 لیست کدهای هدیه", callback_data: "list_gift_codes" }],
+              [{ text: "📊 آمار ربات", callback_data: "bot_stats" }]
+            ]
+          };
+          await editMessageText(chatId, msgId, "⚙️ **پنل مدیریت ربات:**", panelKb);
+          return await answerCallbackQuery(cb.id);
+        }
+
+        if (data === "create_gift_code" && userId === OWNER_ID) {
+          dbData.pv_state[userId] = { step: "code" };
+          saveDB();
+          const cancelKb = {
+            inline_keyboard: [[{ text: "🔙 بازگشت / لغو", callback_data: "cancel_pv_action" }]]
+          };
+          await editMessageText(chatId, msgId, "🎁 **ساخت کد هدیه**\n\nلطفاً نام یا متن کد هدیه خود را بفرستید:", cancelKb);
+          return await answerCallbackQuery(cb.id);
+        }
+
+        if (data === "list_gift_codes" && userId === OWNER_ID) {
+          const codes = Object.entries(dbData.gift_codes);
+          if (codes.length === 0) {
+            return await answerCallbackQuery(cb.id, "هیچ کد هدیه‌ای ساخته نشده است.", true);
+          }
+          let txt = "📊 **لیست کدهای هدیه:**\n\n";
+          codes.forEach(([cName, cData], idx) => {
+            txt += `${idx + 1}. کد: \`${cName}\`\n    ظرفیت: ${cData.used_count} / ${cData.capacity}\n   جایزه: ${cData.amount} سانت\n\n`;
+          });
+          const backKb = { inline_keyboard: [[{ text: "🔙 بازگشت به پنل", callback_data: "owner_panel" }]] };
+          await editMessageText(chatId, msgId, txt, backKb);
+          return await answerCallbackQuery(cb.id);
+        }
+
+        if (data === "bot_stats" && userId === OWNER_ID) {
+          const uCount = Object.keys(dbData.users).length;
+          const gCount = Object.keys(dbData.gift_codes).length;
+          await answerCallbackQuery(cb.id, `تعداد کاربران: ${uCount}\nکدهای هدیه فعال: ${gCount}`, true);
+          return;
+        }
+
+        if (data === "enter_gift_prompt") {
+          dbData.pv_state[userId] = { step: "wait_gift_code" };
+          saveDB();
+          const cancelKb = {
+            inline_keyboard: [[{ text: "🔙 بازگشت / لغو", callback_data: "cancel_pv_action" }]]
+          };
+          await editMessageText(chatId, msgId, "🎁 **وارد کردن کد هدیه**\n\nلطفاً کد هدیه خود را ارسال کنید:", cancelKb);
+          return await answerCallbackQuery(cb.id);
+        }
+
+        if (data === "cancel_pv_action") {
+          delete dbData.pv_state[userId];
+          saveDB();
+          const startText = `سلام! به ربات خوش آمدید. 🎮\n\nبرای دسترسی به بخش‌ها از دکمه‌های زیر استفاده کنید:`;
+          const replyMarkup = {
+            keyboard: [
+              [{ text: "➕ افزودن ربات به گروه" }, { text: "🎁 وارد کردن کد هدیه" }]
+            ],
+            resize_keyboard: true,
+            is_persistent: true
+          };
+          if (userId === OWNER_ID) {
+            replyMarkup.keyboard.push([{ text: "⚙️ پنل مدیریت" }]);
+          }
+          await editMessageText(chatId, msgId, "❌ عملیات لغو شد.");
+          return await sendMessage(chatId, startText, null, replyMarkup);
+        }
+      }
+
       return;
     }
 
@@ -278,11 +327,21 @@ async function handleUpdate(update) {
 
     // ---------------- پیوی ربات ----------------
     if (isPrivate) {
-      // دکمه بازگشت به منوی اصلی
-      if (text === "🔙 بازگشت به منوی اصلی") {
+      // دستور کنسل برای مالک در پیوی
+      if (text === "کنسل" && userId === OWNER_ID && dbData.pv_state[userId]) {
         delete dbData.pv_state[userId];
         saveDB();
-        return await sendMessage(chatId, "🏠 به منوی اصلی برگشتید.", null, getPrivateReplyKeyboard(userId));
+        const replyMarkup = {
+          keyboard: [
+            [{ text: "➕ افزودن ربات به گروه" }, { text: "🎁 وارد کردن کد هدیه" }]
+          ],
+          resize_keyboard: true,
+          is_persistent: true
+        };
+        if (userId === OWNER_ID) {
+          replyMarkup.keyboard.push([{ text: "⚙️ پنل مدیریت" }]);
+        }
+        return await sendMessage(chatId, "✅ عملیات جاری کنسل شد.", null, replyMarkup);
       }
 
       if (dbData.pv_state[userId]) {
@@ -292,20 +351,24 @@ async function handleUpdate(update) {
           state.codeName = text;
           state.step = "capacity";
           saveDB();
-          return await sendMessage(chatId, "✅ کد هدیه ثبت شد.\n\nتعداد ظرفیت این کد هدیه را بفرستید (مثلا 3):", null, getBackReplyKeyboard(userId));
+          const cancelKb = { inline_keyboard: [[{ text: "🔙 بازگشت / لغو", callback_data: "cancel_pv_action" }]] };
+          return await sendMessage(chatId, "✅ کد هدیه ثبت شد.\n\nتعداد ظرفیت این کد هدیه را بفرستید (مثلا 3):", null, cancelKb);
         } else if (userId === OWNER_ID && state.step === "capacity") {
           const cap = parseInt(text);
           if (isNaN(cap) || cap <= 0) {
-            return await sendMessage(chatId, "⚠️ لطفاً یک عدد معتبر برای ظرفیت وارد کنید:", null, getBackReplyKeyboard(userId));
+            const cancelKb = { inline_keyboard: [[{ text: "🔙 بازگشت / لغو", callback_data: "cancel_pv_action" }]] };
+            return await sendMessage(chatId, "⚠️ لطفاً یک عدد معتبر برای ظرفیت وارد کنید:", null, cancelKb);
           }
           state.capacity = cap;
           state.step = "amount";
           saveDB();
-          return await sendMessage(chatId, "✅ ظرفیت ثبت شد.\n\nتعداد سانتی که به هر نفر می‌دهد را بفرستید (مثلا 50):", null, getBackReplyKeyboard(userId));
+          const cancelKb = { inline_keyboard: [[{ text: "🔙 بازگشت / لغو", callback_data: "cancel_pv_action" }]] };
+          return await sendMessage(chatId, "✅ ظرفیت ثبت شد.\n\nتعداد سانتی که به هر نفر می‌دهد را بفرستید (مثلا 50):", null, cancelKb);
         } else if (userId === OWNER_ID && state.step === "amount") {
           const amt = parseInt(text);
           if (isNaN(amt) || amt <= 0) {
-            return await sendMessage(chatId, "⚠️ لطفاً یک عدد معتبر برای مقدار سانت وارد کنید:", null, getBackReplyKeyboard(userId));
+            const cancelKb = { inline_keyboard: [[{ text: "🔙 بازگشت / لغو", callback_data: "cancel_pv_action" }]] };
+            return await sendMessage(chatId, "⚠️ لطفاً یک عدد معتبر برای مقدار سانت وارد کنید:", null, cancelKb);
           }
 
           dbData.gift_codes[state.codeName] = {
@@ -317,89 +380,98 @@ async function handleUpdate(update) {
           delete dbData.pv_state[userId];
           saveDB();
 
-          const richGiftText = `🎉 **کد هدیه جدید ساخته شد!** 🔥\n\n` +
-            `🎁 **کد:** \`${state.codeName}\`\n` +
-            `👥 **ظرفیت کل:** ${state.capacity} نفر\n` +
-            `💰 **جایزه هر نفر:** ${amt} سانت\n\n` +
-            `🚀 برای دریافت هدیه در گروه بفرستید:\n\`کد هدیه ${state.codeName}\``;
+          const richGiftText = `🎉 **ساخت کد هدیه جدید!** 🎁\n\n` +
+            `🔹 **کد:** \`${state.codeName}\`\n` +
+            `👥 **ظرفیت:** ${state.capacity} نفر\n` +
+            `🎁 **جایزه:** ${amt} سانت\n\n` +
+            `📌 برای دریافت سانت در گروه بفرستید:\n\`کد هدیه ${state.codeName}\``;
 
-          return await sendMessage(chatId, richGiftText, null, getPrivateReplyKeyboard(userId));
+          const replyMarkup = {
+            keyboard: [
+              [{ text: "➕ افزودن ربات به گروه" }, { text: "🎁 وارد کردن کد هدیه" }]
+            ],
+            resize_keyboard: true,
+            is_persistent: true
+          };
+          if (userId === OWNER_ID) {
+            replyMarkup.keyboard.push([{ text: "⚙️ پنل مدیریت" }]);
+          }
+
+          return await sendMessage(chatId, richGiftText, null, replyMarkup);
         } else if (state.step === "wait_gift_code") {
           delete dbData.pv_state[userId];
           saveDB();
           const res = processGiftCode(userId, text);
-          return await sendMessage(chatId, res.message, null, getPrivateReplyKeyboard(userId));
+          const replyMarkup = {
+            keyboard: [
+              [{ text: "➕ افزودن ربات به گروه" }, { text: "🎁 وارد کردن کد هدیه" }]
+            ],
+            resize_keyboard: true,
+            is_persistent: true
+          };
+          if (userId === OWNER_ID) {
+            replyMarkup.keyboard.push([{ text: "⚙️ پنل مدیریت" }]);
+          }
+          return await sendMessage(chatId, res.message, null, replyMarkup);
         }
       }
 
-      if (text === "/start") {
-        const startText = `سلام! به ربات خوش آمدید. 🎮\n\nبرای افزودن ربات به گروه خود از دکمه زیر استفاده کنید:`;
+      if (text === "/start" || text === "شروع") {
+        const startText = `سلام! به ربات خوش آمدید. 🎮\n\nبرای استفاده از امکانات ربات از دکمه‌های زیر استفاده کنید:`;
+        const replyMarkup = {
+          keyboard: [
+            [{ text: "➕ افزودن ربات به گروه" }, { text: "🎁 وارد کردن کد هدیه" }]
+          ],
+          resize_keyboard: true,
+          is_persistent: true
+        };
+
+        if (userId === OWNER_ID) {
+          replyMarkup.keyboard.push([{ text: "⚙️ پنل مدیریت" }]);
+        }
+
+        return await sendMessage(chatId, startText, msg.message_id, replyMarkup);
+      }
+
+      if (text === "➕ افزودن ربات به گروه") {
+        const addText = `برای افزودن ربات به گروه خود روی لینک زیر بزنید:`;
         const inlineKb = {
           inline_keyboard: [
-            [{ text: "➕ افزودن ربات به گروه خود", url: `https://t.me/${BOT_USERNAME.replace("@", "")}?startgroup=true` }]
+            [{ text: "➕ افزودن به گروه", url: `https://t.me/${BOT_USERNAME.replace("@", "")}?startgroup=true` }]
           ]
         };
-        return await sendMessage(chatId, startText, msg.message_id, inlineKb);
+        return await sendMessage(chatId, addText, msg.message_id, inlineKb);
       }
 
-      if (text === "/panel" || text === "⚙️ پنل مدیریت") {
-        if (userId !== OWNER_ID) return;
-        const panelKb = {
-          inline_keyboard: [
-            [{ text: "🎁 ساخت کد هدیه", callback_data: "create_gift_code" }],
-            [{ text: "📊 آمار ربات", callback_data: "bot_stats" }]
-          ]
-        };
-        return await sendMessage(chatId, "⚙️ **پنل مدیریت ربات:**\n\nیک گزینه را انتخاب کنید:", null, panelKb);
-      }
-
-      // دکمه ثابت وارد کردن کد هدیه در پیوی
       if (text === "🎁 وارد کردن کد هدیه") {
         dbData.pv_state[userId] = { step: "wait_gift_code" };
         saveDB();
-        return await sendMessage(chatId, "🎁 **وارد کردن کد هدیه**\n\nلطفاً کد هدیه خود را ارسال کنید:", null, getBackReplyKeyboard(userId));
+        const cancelKb = {
+          inline_keyboard: [[{ text: "🔙 بازگشت / لغو", callback_data: "cancel_pv_action" }]]
+        };
+        return await sendMessage(chatId, "🎁 **وارد کردن کد هدیه**\n\nلطفاً کد هدیه خود را ارسال کنید:", msg.message_id, cancelKb);
       }
 
-      // دکمه ثابت لیست کدهای هدیه برای مالک در پیوی
-      if (text === "📋 لیست کدهای هدیه" && userId === OWNER_ID) {
-        const codes = dbData.gift_codes;
-        const keys = Object.keys(codes);
-        if (keys.length === 0) {
-          return await sendMessage(chatId, "📭 هیچ کد هدیه‌ای تاکنون ساخته نشده است.");
-        }
-
-        let report = "📋 **لیست کدهای هدیه فعال:**\n\n";
-        keys.forEach((cName, idx) => {
-          const item = codes[cName];
-          const remainingSlots = item.capacity - item.used_count;
-          const status = remainingSlots > 0 ? "🟢 فعال (دارای ظرفیت)" : "🔴 تکمیل شده";
-          report += `${idx + 1}. کد: \`${cName}\`\n   🎁 جایزه: ${item.amount} سانت\n   👥 ظرفیت: ${item.used_count} از ${item.capacity} نفر زده‌اند (${status})\n\n`;
-        });
-        return await sendMessage(chatId, report);
+      if (text === "⚙️ پنل مدیریت" && userId === OWNER_ID) {
+        const panelKb = {
+          inline_keyboard: [
+            [{ text: "🎁 ساخت کد هدیه", callback_data: "create_gift_code" }],
+            [{ text: "📊 لیست کدهای هدیه", callback_data: "list_gift_codes" }],
+            [{ text: "📊 آمار ربات", callback_data: "bot_stats" }]
+          ]
+        };
+        return await sendMessage(chatId, "⚙️ **پنل مدیریت ربات:**\n\nیک گزینه را انتخاب کنید:", msg.message_id, panelKb);
       }
 
-      // مدیریت کلیک دکمه‌های شیشه‌ای پیوی (مانند ساخت کد هدیه)
-      if (update.callback_query) {
-        const cb = update.callback_query;
-        const cbData = cb.data;
-        const cbUserId = String(cb.from.id);
-        const cbChatId = cb.message.chat.id;
-        const cbMsgId = cb.message.message_id;
-
-        if (cbData === "create_gift_code" && cbUserId === OWNER_ID) {
-          dbData.pv_state[cbUserId] = { step: "code" };
-          saveDB();
-          await editMessageText(cbChatId, cbMsgId, "🎁 **ساخت کد هدیه**\n\nلطفاً نام یا متن کد هدیه خود را بفرستید:");
-          await sendMessage(cbChatId, "برای لغو و بازگشت روی دکمه زیر بزنید:", null, getBackReplyKeyboard(cbUserId));
-          return await answerCallbackQuery(cb.id);
-        }
-
-        if (cbData === "bot_stats" && cbUserId === OWNER_ID) {
-          const uCount = Object.keys(dbData.users).length;
-          const gCount = Object.keys(dbData.gift_codes).length;
-          await answerCallbackQuery(cb.id, `تعداد کاربران: ${uCount}\nکدهای هدیه فعال: ${gCount}`, true);
-          return;
-        }
+      if (text === "/panel" && userId === OWNER_ID) {
+        const panelKb = {
+          inline_keyboard: [
+            [{ text: "🎁 ساخت کد هدیه", callback_data: "create_gift_code" }],
+            [{ text: "📊 لیست کدهای هدیه", callback_data: "list_gift_codes" }],
+            [{ text: "📊 آمار ربات", callback_data: "bot_stats" }]
+          ]
+        };
+        return await sendMessage(chatId, "⚙️ **پنل مدیریت ربات:**\n\nیک گزینه را انتخاب کنید:", msg.message_id, panelKb);
       }
 
       return;
@@ -423,18 +495,6 @@ async function handleUpdate(update) {
         const codeInput = text.replace("کد هدیه", "").trim();
         const res = processGiftCode(userId, codeInput);
         return await sendMessage(chatId, res.message, msg.message_id);
-      }
-
-      // دستور جدید مالک برای لغو/کنسل کردن کد هدیه در گروه: کنسل اینجا کد هدیه [نام_کد]
-      if (text.startsWith("کنسل اینجا کد هدیه ") && userId === OWNER_ID) {
-        const codeName = text.replace("کنسل اینجا کد هدیه", "").trim();
-        if (dbData.gift_codes[codeName]) {
-          delete dbData.gift_codes[codeName];
-          saveDB();
-          return await sendMessage(chatId, `🗑 کد هدیه \`${codeName}\` با موفقیت لغو و حذف شد.`, msg.message_id);
-        } else {
-          return await sendMessage(chatId, `⚠️ کد هدیه \`${codeName}\` یافت نشد.`, msg.message_id);
-        }
       }
 
       if (text.startsWith("انتقال ")) {
@@ -468,10 +528,13 @@ async function handleUpdate(update) {
           }
 
           u.balance -= totalNeeded;
+
           const receiver = getUser(targetUid);
           receiver.balance += transferAmount;
+
           const owner = getUser(OWNER_ID);
           owner.balance += tax;
+
           saveDB();
 
           return await sendMessage(chatId, `💸 **انتقال سانت با موفقیت انجام شد!**\n\n` +
