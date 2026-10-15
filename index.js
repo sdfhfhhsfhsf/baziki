@@ -110,7 +110,6 @@ function getUser(userId) {
   return dbData.users[uId];
 }
 
-// تابع پردازش و اعمال کد هدیه برای کاربر
 function processGiftCode(userId, codeText) {
   const gift = dbData.gift_codes[codeText];
   if (!gift) {
@@ -183,25 +182,30 @@ async function handleUpdate(update) {
           return await answerCallbackQuery(cb.id, `موجودی شما ناکافی است! شما به ${game.amount} سانت نیاز دارید.`, true);
         }
 
+        // کسر موجودی از بازنده (شرکت‌کننده)
         joiner.balance -= game.amount;
 
         const prize = game.amount * 2;
-        const winnerUser = getUser(userId);
+        const winnerUser = getUser(game.creator_id);
         winnerUser.balance += prize;
 
         delete dbData.games[gameId];
         saveDB();
 
-        const winnerName = cb.from.first_name || "کاربر";
-        const successText = `🏆 **بازی به اتمام رسید!**\n\n` +
-          `👤 برنده: [${winnerName}](tg://user?id=${userId})\n` +
-          `🎁 جایزه دریافتی: **${prize} سانت**`;
+        const winnerName = game.creator_name;
+        const loserName = cb.from.first_name || "کاربر";
+
+        const successText = `🏆 **نتیجه بازی و اعلام برنده:**\n\n` +
+          `👑 برنده: [${winnerName}](tg://user?id=${game.creator_id})\n` +
+          `➕ دریافت جایزه: **+${prize} سانت** (موجودی جدید: **${winnerUser.balance} سانت**)\n\n` +
+          `💔 بازنده: [${loserName}](tg://user?id=${userId})\n` +
+          `➖ کسر مبلغ: **-${game.amount} سانت** (موجودی جدید: **${joiner.balance} سانت**)\n\n` +
+          `🔥 بازی به اتمام رسید!`;
 
         await editMessageText(chatId, msgId, successText);
-        return await answerCallbackQuery(cb.id, `تبریک! شما برنده ${prize} سانت شدید.`, true);
+        return await answerCallbackQuery(cb.id, `بازی تمام شد! برنده: ${winnerName}`, true);
       }
 
-      // منوی راهنمای دکمه‌ای شیشه‌ای
       if (data === "help_main") {
         const helpKb = {
           inline_keyboard: [
@@ -218,7 +222,8 @@ async function handleUpdate(update) {
           `▫️ \`کیر\` : دریافت سانت شانسی (هر ۵ ساعت)\n` +
           `▫️ \`سانت\` : مشاهده موجودی\n` +
           `▫️ \`بازی [مبلغ]\` : ساخت بازی (مثلاً: \`بازی 20\`)\n` +
-          `▫️ \`لیست\` : مشاهده جدول رده‌بندی سانت‌ها\n` +
+          `▫️ \`انتقال [مبلغ] [ریپلی یا آیدی]\` : انتقال سانت به دیگران\n` +
+          `▫️ \`لیست\` : مشاهده جدول رده‌بندی برترین‌ها\n` +
           `▫️ \`کد هدیه [متن]\` : دریافت هدیه در گروه`;
         const backKb = { inline_keyboard: [[{ text: "🔙 بازگشت", callback_data: "help_main" }]] };
         await editMessageText(chatId, msgId, textGame, backKb);
@@ -277,7 +282,6 @@ async function handleUpdate(update) {
     const text = msg.text ? msg.text.trim() : "";
     const isPrivate = msg.chat.type === "private";
 
-    // ذخیره نام و اطلاعات کاربر در دیتابیس
     if (msg.from) {
       const u = getUser(userId);
       u.name = msg.from.first_name || "کاربر";
@@ -317,7 +321,13 @@ async function handleUpdate(update) {
           delete dbData.pv_state[userId];
           saveDB();
 
-          return await sendMessage(chatId, `🎉 **کد هدیه با موفقیت ساخته شد!**\n\n▫️ کد: \`${state.codeName}\`\n▫️ ظرفیت: ${state.capacity} نفر\n▫️ جایزه: ${amt} سانت`);
+          const richGiftText = `🎉 **ساخت کد هدیه جدید!** 🎁\n\n` +
+            `🔹 **کد:** \`${state.codeName}\`\n` +
+            `👥 **ظرفیت:** ${state.capacity} نفر\n` +
+            `🎁 **جایزه:** ${amt} سانت\n\n` +
+            `📌 برای دریافت سانت در گروه بفرستید:\n\`کد هدیه ${state.codeName}\``;
+
+          return await sendMessage(chatId, richGiftText);
         } else if (state.step === "wait_gift_code") {
           delete dbData.pv_state[userId];
           saveDB();
@@ -359,7 +369,6 @@ async function handleUpdate(update) {
     if (!isPrivate) {
       const u = getUser(userId);
 
-      // دستور راهنما (با دکمه‌های شیشه‌ای)
       if (text === "راهنما") {
         const helpKb = {
           inline_keyboard: [
@@ -370,14 +379,64 @@ async function handleUpdate(update) {
         return await sendMessage(chatId, "📚 **منوی راهنمای ربات:**\n\nیک بخش را انتخاب کنید:", msg.message_id, helpKb);
       }
 
-      // دستور استفاده از کد هدیه در گروه (مثال: کد هدیه mycode)
       if (text.startsWith("کد هدیه ")) {
         const codeInput = text.replace("کد هدیه", "").trim();
         const res = processGiftCode(userId, codeInput);
         return await sendMessage(chatId, res.message, msg.message_id);
       }
 
-      // دستور حذف سانت توسط مالک در گروه (مثال: حذف سانت [آیدی] [مقدار])
+      // دستور انتقال سانت به دیگران همراه با کسر مالیات برای مالک
+      if (text.startsWith("انتقال ")) {
+        const parts = text.split(" ");
+        if (parts.length >= 2) {
+          const transferAmount = parseInt(parts[1]);
+          if (isNaN(transferAmount) || transferAmount <= 0) {
+            return await sendMessage(chatId, "⚠️ مقدار سانت برای انتقال نامعتبر است.", msg.message_id);
+          }
+
+          let targetUid = null;
+          if (msg.reply_to_message && msg.reply_to_message.from) {
+            targetUid = String(msg.reply_to_message.from.id);
+          } else if (parts.length >= 3) {
+            targetUid = parts[2].replace("@", "").trim();
+          }
+
+          if (!targetUid) {
+            return await sendMessage(chatId, "⚠️ لطفاً روی پیام کاربر ریپلی کنید یا آیدی عددی او را وارد کنید.", msg.message_id);
+          }
+
+          if (targetUid === userId) {
+            return await sendMessage(chatId, "❌ نمی‌توانید به خودتان سانت انتقال دهید!", msg.message_id);
+          }
+
+          // محاسبه مالیات (مثلا 5 درصد یا حداقل 1 سانت)
+          const tax = Math.max(1, Math.floor(transferAmount * 0.05));
+          const totalNeeded = transferAmount + tax;
+
+          if (u.balance < totalNeeded) {
+            return await sendMessage(chatId, `❌ موجودی شما ناکافی است!\nبرای انتقال ${transferAmount} سانت به همراه ${tax} سانت مالیات، به حداقل **${totalNeeded} سانت** نیاز دارید.`, msg.message_id);
+          }
+
+          // کسر از فرستنده
+          u.balance -= totalNeeded;
+
+          // واریز به گیرنده
+          const receiver = getUser(targetUid);
+          receiver.balance += transferAmount;
+
+          // واریز مالیات به حساب مالک
+          const owner = getUser(OWNER_ID);
+          owner.balance += tax;
+
+          saveDB();
+
+          return await sendMessage(chatId, `💸 **انتقال سانت با موفقیت انجام شد!**\n\n` +
+            `📤 مقدار ارسالی: **${transferAmount} سانت**\n` +
+            `🏛 مالیات کسر شده: **${tax} سانت** (واریز به مالک)\n` +
+            `💰 موجودی جدید شما: **${u.balance} سانت**`, msg.message_id);
+        }
+      }
+
       if (text.startsWith("حذف سانت ") && userId === OWNER_ID) {
         const parts = text.split(" ");
         if (parts.length >= 3) {
@@ -398,7 +457,7 @@ async function handleUpdate(update) {
         }
       }
 
-      // دستور لیست (جدول رده‌بندی سانت‌ها به ترتیب بیشترین موجودی)
+      // دستور لیست (فقط نمایش نام کاربران بدون آیدی عددی)
       if (text === "لیست") {
         const usersArr = Object.entries(dbData.users).map(([uId, data]) => {
           return { id: uId, name: data.name || "کاربر", balance: data.balance || 0 };
@@ -408,12 +467,11 @@ async function handleUpdate(update) {
           return await sendMessage(chatId, "📊 هنوز کاربری در ربات ثبت نشده است.", msg.message_id);
         }
 
-        // مرتب‌سازی نزولی بر اساس بیشترین سانت
         usersArr.sort((a, b) => b.balance - a.balance);
 
         let listText = "🏆 **لیست رده‌بندی برترین سانت‌ها:**\n\n";
         usersArr.slice(0, 20).forEach((usr, idx) => {
-          listText += `${idx + 1}. [${usr.name}](tg://user?id=${usr.id}) (\`${usr.id}\`) 👈 **${usr.balance} سانت**\n`;
+          listText += `${idx + 1}. [${usr.name}](tg://user?id=${usr.id}) 👈 **${usr.balance} سانت**\n`;
         });
 
         return await sendMessage(chatId, listText, msg.message_id);
