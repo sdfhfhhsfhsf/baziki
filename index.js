@@ -102,7 +102,6 @@ async function editMessageText(chat_id, message_id, text, reply_markup = null) {
   return await tgCall("editMessageText", payload);
 }
 
-// تابع کمکی برای گرفتن یا ساخت کاربر در دیتابیس
 function getUser(userId) {
   const uId = String(userId);
   if (!dbData.users[uId]) {
@@ -113,13 +112,14 @@ function getUser(userId) {
 
 async function handleUpdate(update) {
   try {
-    // مدیریت کلیک روی دکمه‌های شیشه‌ای (لغو یا ورود به بازی)
+    // مدیریت کلیک روی دکمه‌های شیشه‌ای
     if (update.callback_query) {
       const cb = update.callback_query;
       const userId = String(cb.from.id);
       const data = cb.data;
       const chatId = cb.message.chat.id;
       const msgId = cb.message.message_id;
+      const isPrivate = cb.message.chat.type === "private";
 
       if (data.startsWith("cancel_game_")) {
         const gameId = data.replace("cancel_game_", "");
@@ -131,7 +131,6 @@ async function handleUpdate(update) {
           return await answerCallbackQuery(cb.id, "فقط سازنده بازی می‌تواند آن را لغو کند!", true);
         }
 
-        // برگرداندن سانت به سازنده
         const creator = getUser(game.creator_id);
         creator.balance += game.amount;
         saveDB();
@@ -153,16 +152,13 @@ async function handleUpdate(update) {
           return await answerCallbackQuery(cb.id, "سازنده بازی نمی‌تواند روی بازی خودش ورود بزند!", true);
         }
 
-        // چک کردن موجودی شرکت‌کننده
         const joiner = getUser(userId);
         if (joiner.balance < game.amount) {
           return await answerCallbackQuery(cb.id, `موجودی شما ناکافی است! شما به ${game.amount} سانت نیاز دارید.`, true);
         }
 
-        // کسر موجودی از شرکت‌کننده
         joiner.balance -= game.amount;
 
-        // محاسبه جایزه برنده (دو برابر مبلغ بازی)
         const prize = game.amount * 2;
         const winnerUser = getUser(userId);
         winnerUser.balance += prize;
@@ -179,6 +175,41 @@ async function handleUpdate(update) {
         return await answerCallbackQuery(cb.id, `تبریک! شما برنده ${prize} سانت شدید.`, true);
       }
 
+      // هندل کردن دکمه‌های پیوی
+      if (isPrivate) {
+        if (data === "owner_panel" && userId === OWNER_ID) {
+          const panelKb = {
+            inline_keyboard: [
+              [{ text: "🎁 ساخت کد هدیه", callback_data: "create_gift_code" }],
+              [{ text: "📊 آمار ربات", callback_data: "bot_stats" }]
+            ]
+          };
+          await editMessageText(chatId, msgId, "⚙️ **پنل مدیریت ربات:**", panelKb);
+          return await answerCallbackQuery(cb.id);
+        }
+
+        if (data === "create_gift_code" && userId === OWNER_ID) {
+          dbData.pv_state[userId] = { step: "code" };
+          saveDB();
+          await editMessageText(chatId, msgId, "🎁 **ساخت کد هدیه**\n\nلطفاً نام یا متن کد هدیه خود را بفرستید:");
+          return await answerCallbackQuery(cb.id);
+        }
+
+        if (data === "bot_stats" && userId === OWNER_ID) {
+          const uCount = Object.keys(dbData.users).length;
+          const gCount = Object.keys(dbData.gift_codes).length;
+          await answerCallbackQuery(cb.id, `تعداد کاربران: ${uCount}\nکدهای هدیه فعال: ${gCount}`, true);
+          return;
+        }
+
+        if (data === "enter_gift_prompt") {
+          dbData.pv_state[userId] = { step: "wait_gift_code" };
+          saveDB();
+          await editMessageText(chatId, msgId, "🎁 **وارد کردن کد هدیه**\n\nلطفاً کد هدیه خود را ارسال کنید:");
+          return await answerCallbackQuery(cb.id);
+        }
+      }
+
       return;
     }
 
@@ -191,19 +222,18 @@ async function handleUpdate(update) {
 
     // ---------------- پیوی ربات ----------------
     if (isPrivate) {
-      // ثبت نام کاربر در صورت نیاز
       getUser(userId);
 
-      // بررسی وضعیت انتظار در پیوی (مخصوص مالک برای ساخت کد هدیه)
-      if (userId === OWNER_ID && dbData.pv_state[userId]) {
+      // بررسی وضعیت انتظار در پیوی (مخصوص ساخت کد هدیه یا وارد کردن آن)
+      if (dbData.pv_state[userId]) {
         const state = dbData.pv_state[userId];
 
-        if (state.step === "code") {
+        if (userId === OWNER_ID && state.step === "code") {
           state.codeName = text;
           state.step = "capacity";
           saveDB();
           return await sendMessage(chatId, "✅ کد هدیه ثبت شد.\n\nتعداد ظرفیت این کد هدیه را بفرستید (مثلا 3):");
-        } else if (state.step === "capacity") {
+        } else if (userId === OWNER_ID && state.step === "capacity") {
           const cap = parseInt(text);
           if (isNaN(cap) || cap <= 0) {
             return await sendMessage(chatId, "⚠️ لطفاً یک عدد معتبر برای ظرفیت وارد کنید:");
@@ -212,13 +242,12 @@ async function handleUpdate(update) {
           state.step = "amount";
           saveDB();
           return await sendMessage(chatId, "✅ ظرفیت ثبت شد.\n\nتعداد سانتی که به هر نفر می‌دهد را بفرستید (مثلا 50):");
-        } else if (state.step === "amount") {
+        } else if (userId === OWNER_ID && state.step === "amount") {
           const amt = parseInt(text);
           if (isNaN(amt) || amt <= 0) {
             return await sendMessage(chatId, "⚠️ لطفاً یک عدد معتبر برای مقدار سانت وارد کنید:");
           }
 
-          // ذخیره نهایی کد هدیه
           dbData.gift_codes[state.codeName] = {
             capacity: state.capacity,
             used_count: 0,
@@ -231,8 +260,34 @@ async function handleUpdate(update) {
           return await sendMessage(chatId, `🎉 **کد هدیه با موفقیت ساخته شد!**\n\n` +
             `▫️ کد: \`${state.codeName}\`\n` +
             `▫️ ظرفیت: ${state.capacity} نفر\n` +
-            `▫️ جایزه: ${amt} سانت\n\n` +
-            `کاربران می‌توانند با دکمه یا دستور مربوطه آن را دریافت کنند.`);
+            `▫️ جایزه: ${amt} سانت`);
+        } else if (state.step === "wait_gift_code") {
+          delete dbData.pv_state[userId];
+          saveDB();
+          const codeInput = text;
+          const gift = dbData.gift_codes[codeInput];
+
+          if (!gift) {
+            return await sendMessage(chatId, "❌ این کد هدیه وجود ندارد یا اشتباه است.");
+          }
+
+          if (gift.used_users.includes(userId)) {
+            return await sendMessage(chatId, "⚠️ شما قبلاً از این کد هدیه استفاده کرده‌اید!");
+          }
+
+          if (gift.used_count >= gift.capacity) {
+            return await sendMessage(chatId, "❌ کد هدیه تمام شده است!");
+          }
+
+          gift.used_count += 1;
+          gift.used_users.push(userId);
+          const u = getUser(userId);
+          u.balance += gift.amount;
+          saveDB();
+
+          return await sendMessage(chatId, `🎁 **تبریک! کد هدیه با موفقیت اعمال شد.**\n\n` +
+            `✨ مقدار جایزه: **${gift.amount} سانت**\n` +
+            `💰 موجودی جدید شما: **${u.balance} سانت**`);
         }
       }
 
@@ -254,7 +309,7 @@ async function handleUpdate(update) {
         return await sendMessage(chatId, startText, msg.message_id, inlineKb);
       }
 
-      // دستور پنل مالک در پیوی
+      // دستور /panel برای مالک در پیوی
       if (text === "/panel" && userId === OWNER_ID) {
         const panelKb = {
           inline_keyboard: [
@@ -265,86 +320,6 @@ async function handleUpdate(update) {
         return await sendMessage(chatId, "⚙️ **پنل مدیریت ربات:**\n\nیک گزینه را انتخاب کنید:", null, panelKb);
       }
 
-      // مدیریت دکمه‌های پیوی مالک یا کاربران
-      if (update.callback_query && update.callback_query.message.chat.type === "private") {
-        // این بخش اگر callback_query در پیوی بیاید
-        // در اینجا هندل می‌شود
-      }
-
-      // دکمه‌های شیشه‌ای پیوی
-      if (update.callback_query) {
-        const cb = update.callback_query;
-        const cbData = cb.data;
-        const cbUserId = String(cb.from.id);
-        const cbChatId = cb.message.chat.id;
-        const cbMsgId = cb.message.message_id;
-
-        if (cbData === "owner_panel" && cbUserId === OWNER_ID) {
-          const panelKb = {
-            inline_keyboard: [
-              [{ text: "🎁 ساخت کد هدیه", callback_data: "create_gift_code" }],
-              [{ text: "📊 آمار ربات", callback_data: "bot_stats" }]
-            ]
-          };
-          await editMessageText(cbChatId, cbMsgId, "⚙️ **پنل مدیریت ربات:**", panelKb);
-          return await answerCallbackQuery(cb.id);
-        }
-
-        if (cbData === "create_gift_code" && cbUserId === OWNER_ID) {
-          dbData.pv_state[cbUserId] = { step: "code" };
-          saveDB();
-          await editMessageText(cbChatId, cbMsgId, "🎁 **ساخت کد هدیه**\n\nلطفاً نام یا متن کد هدیه خود را بفرستید:");
-          return await answerCallbackQuery(cb.id);
-        }
-
-        if (cbData === "bot_stats" && cbUserId === OWNER_ID) {
-          const uCount = Object.keys(dbData.users).length;
-          const gCount = Object.keys(dbData.gift_codes).length;
-          await answerCallbackQuery(cb.id, `تعداد کاربران: ${uCount}\nکدهای هدیه فعال: ${gCount}`, true);
-          return;
-        }
-
-        if (cbData === "enter_gift_prompt") {
-          dbData.pv_state[cbUserId] = { step: "wait_gift_code" };
-          saveDB();
-          await editMessageText(cbChatId, cbMsgId, "🎁 **وارد کردن کد هدیه**\n\nلطفاً کد هدیه خود را ارسال کنید:");
-          return await answerCallbackQuery(cb.id);
-        }
-      }
-
-      // اگر کاربر در حال وارد کردن کد هدیه در پیوی بود
-      if (dbData.pv_state[userId] && dbData.pv_state[userId].step === "wait_gift_code") {
-        delete dbData.pv_state[userId];
-        const codeInput = text;
-        const gift = dbData.gift_codes[codeInput];
-
-        if (!gift) {
-          saveDB();
-          return await sendMessage(chatId, "❌ این کد هدیه وجود ندارد یا اشتباه است.");
-        }
-
-        if (gift.used_users.includes(userId)) {
-          saveDB();
-          return await sendMessage(chatId, "⚠️ شما قبلاً از این کد هدیه استفاده کرده‌اید!");
-        }
-
-        if (gift.used_count >= gift.capacity) {
-          saveDB();
-          return await sendMessage(chatId, "❌ کد هدیه تمام شده است!");
-        }
-
-        // اعمال جایزه به کاربر
-        gift.used_count += 1;
-        gift.used_users.push(userId);
-        const u = getUser(userId);
-        u.balance += gift.amount;
-        saveDB();
-
-        return await sendMessage(chatId, `🎁 **تبریک! کد هدیه با موفقیت اعمال شد.**\n\n` +
-          `✨ مقدار جایزه: **${gift.amount} سانت**\n` +
-          `💰 موجودی جدید شما: **${u.balance} سانت**`);
-      }
-
       return;
     }
 
@@ -352,7 +327,6 @@ async function handleUpdate(update) {
     if (!isPrivate) {
       const u = getUser(userId);
 
-      // 1. دستور راهنما
       if (text === "راهنما") {
         const helpText = `📚 **راهنمای دستورات ربات بازی سانت:**\n\n` +
           `▫️ \`کیر\` : دریافت سانت شانسی (هر ۵ ساعت یک‌بار، احتمال گرفتن سانت کمتر بسیار بیشتر است)\n` +
@@ -362,15 +336,13 @@ async function handleUpdate(update) {
         return await sendMessage(chatId, helpText, msg.message_id);
       }
 
-      // 2. دستور سانت (مشاهده موجودی)
       if (text === "سانت") {
         return await sendMessage(chatId, `💰 کاربر [${msg.from.first_name}](tg://user?id=${userId})، موجودی شما: **${u.balance} سانت** است.`, msg.message_id);
       }
 
-      // 3. دستور کیر (دریافت سانت هر ۵ ساعت یک‌بار)
       if (text === "کیر") {
         const now = Date.now();
-        const cooldown = 5 * 60 * 60 * 1000; // ۵ ساعت به میلی‌ثانیه
+        const cooldown = 5 * 60 * 60 * 1000;
 
         if (u.last_kiro && (now - u.last_kiro < cooldown)) {
           const remaining = cooldown - (now - u.last_kiro);
@@ -379,14 +351,11 @@ async function handleUpdate(update) {
           return await sendMessage(chatId, `⏳ شما اخیراً از این دستور استفاده کرده‌اید!\nبرای استفاده مجدد باید **${hours} ساعت و ${minutes} دقیقه** صبر کنید.`, msg.message_id);
         }
 
-        // شانس سانت از 1 تا 70 با احتمال بیشتر برای اعداد کمتر (1 تا 30)
         let randVal;
         const chance = Math.random();
         if (chance < 0.75) {
-          // ۷۵ درصد احتمال برای اعداد بین 1 تا 30
           randVal = Math.floor(Math.random() * 30) + 1;
         } else {
-          // ۲۵ درصد احتمال برای اعداد بین 31 تا 70
           randVal = Math.floor(Math.random() * 40) + 31;
         }
 
@@ -397,7 +366,6 @@ async function handleUpdate(update) {
         return await sendMessage(chatId, `🎉 کاربر [${msg.from.first_name}](tg://user?id=${userId})، شانس شما چرخید و **${randVal} سانت** به دست آوردید!\n💰 موجودی کل: **${u.balance} سانت**`, msg.message_id);
       }
 
-      // 4. دستور ساخت بازی (مثلاً: بازی 20)
       if (text.startsWith("بازی ")) {
         const amountStr = text.replace("بازی", "").trim();
         const betAmount = parseInt(amountStr);
@@ -410,7 +378,6 @@ async function handleUpdate(update) {
           return await sendMessage(chatId, "❌ موجودی ناکافی هست!", msg.message_id);
         }
 
-        // کسر موجودی از سازنده
         u.balance -= betAmount;
         
         const gameId = "game_" + Date.now() + "_" + userId;
